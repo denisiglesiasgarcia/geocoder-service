@@ -15,20 +15,9 @@ services:
       timeout: 3s
       retries: 10
 
-  # Job unique : télécharge les données SITG et (re)construit l'index si besoin
-  # (ingest.py est idempotent — ignore l'étape si l'index est déjà à jour).
-  ingest:
-    build: .
-    command: sh -c "python -m geocoder_service.download && python -m geocoder_service.ingest"
-    environment:
-      MEILI_URL: http://meilisearch:7700
-      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY must be set (see .env.example)}
-    volumes:
-      - geocoder_data:/app/data
-    depends_on:
-      meilisearch:
-        condition: service_healthy
-
+  # Télécharge les données SITG et (re)construit l'index au démarrage du
+  # conteneur (voir entrypoint.sh) avant de lancer l'API -- idempotent, donc
+  # un redémarrage ne relance pas tout le travail si l'index est à jour.
   api:
     build: .
     restart: unless-stopped
@@ -42,13 +31,14 @@ services:
     depends_on:
       meilisearch:
         condition: service_healthy
-      ingest:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
+      # Le premier démarrage télécharge (~5MB) et indexe (~15s) les données
+      # avant que l'API ne réponde ; ne pas compter ça comme des échecs.
+      start_period: 60s
 
 volumes:
   meili_data:

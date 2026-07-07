@@ -11,8 +11,13 @@ RUN uv sync --frozen --no-install-project
 COPY src ./src
 RUN uv sync --frozen
 
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
+
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-CMD ["uvicorn", "geocoder_service.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Au démarrage : attend Meilisearch, télécharge/indexe les données si besoin
+# (idempotent), puis lance l'API. Plus besoin d'un service "ingest" séparé.
+ENTRYPOINT ["./entrypoint.sh"]

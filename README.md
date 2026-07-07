@@ -24,10 +24,11 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 Copier le résultat dans `.env` à la place de la valeur d'exemple.
 
-Ça suffit : `docker compose up` démarre Meilisearch, télécharge et indexe les
-54k adresses SITG (job `ingest`, ~15s, ignoré automatiquement s'il tourne à
-nouveau et que l'index est déjà à jour), puis démarre l'API sur
-`http://localhost:8000`.
+Ça suffit : le conteneur `api` télécharge et indexe lui-même les 54k adresses
+SITG à son démarrage (`entrypoint.sh` : attend Meilisearch, puis
+`download` + `ingest`, ~15s) avant de lancer le serveur — pas de service
+séparé à orchestrer manuellement. Un redémarrage ne refait rien : `ingest.py`
+est idempotent (compare le nombre de documents déjà indexés).
 
 ```bash
 curl "http://localhost:8000/search?q=Av.%20J-D%20Maillard,%207&limit=3"
@@ -37,7 +38,7 @@ curl "http://localhost:8000/health"
 Pour forcer une réindexation (ex. après une mise à jour des données SITG) :
 
 ```bash
-docker compose run --rm ingest python -m geocoder_service.ingest --force
+docker compose exec api python -m geocoder_service.ingest --force
 ```
 
 ## Développement local (sans Docker pour l'API)
@@ -125,10 +126,11 @@ score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
 
 ## Fichiers
 
-- `docker-compose.yml` — Meilisearch, job d'ingestion (unique, idempotent) et API, tout lié
-  par un volume `geocoder_data` partagé (l'API a besoin de `data/abbr_to_full.json`,
-  généré par l'ingestion).
-- `Dockerfile` — image commune à l'API et au job d'ingestion.
+- `docker-compose.yml` — Meilisearch + API (l'API attend Meilisearch puis
+  s'auto-indexe au démarrage, voir `entrypoint.sh`), volume `geocoder_data`
+  pour persister les données téléchargées et `abbr_to_full.json`.
+- `Dockerfile` / `entrypoint.sh` — image de l'API : attend Meilisearch,
+  télécharge/indexe si besoin (idempotent), puis lance uvicorn.
 - `src/geocoder_service/download.py` — téléchargement/extraction des données (idempotent).
 - `src/geocoder_service/ingest.py` — indexation Meilisearch + génération des synonymes
   (idempotent : ignore si l'index est déjà à jour, `--force` pour forcer).
