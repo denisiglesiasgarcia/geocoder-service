@@ -67,7 +67,7 @@ geocode("Av. de Thonex 30", limit=3)
 Ou via l'API HTTP (`GET /search?q=...&limit=...`, `GET /health`) une fois le
 service démarré.
 
-Voir aussi [`examples.ipynb`](examples.ipynb) pour des exemples exécutables
+Voir aussi [`notebooks/examples.ipynb`](notebooks/examples.ipynb) pour des exemples exécutables
 (abréviations, initiales ambiguës, suffixes bis/ter, plages de numéros, API
 HTTP, comparaison sur le jeu de test). Nécessite `uv sync` (dépendance de dev
 `ipykernel`) et la stack Docker démarrée.
