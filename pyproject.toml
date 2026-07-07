@@ -1,0 +1,20 @@
+[project]
+name = "geocoder-service"
+version = "0.1.0"
+description = "Geocodeur d'adresses du canton de Genève, basé sur les données ouvertes SITG (CAD_ADRESSE) et Meilisearch."
+requires-python = ">=3.13"
+dependencies = [
+    "pyshp>=2.3.1",
+    "pyproj>=3.7.0",
+    "meilisearch>=0.31.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "rapidfuzz>=3.10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/geocoder_service"]

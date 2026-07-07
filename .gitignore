@@ -1,0 +1,6 @@
+.env
+data/
+meili_data/
+.venv/
+__pycache__/
+*.pyc
