@@ -10,7 +10,10 @@ donc notre propre score, à partir de deux signaux indépendants :
    supplémentaires non partagés, comme la commune si la requête ne la mentionne
    pas) entre la requête et l'adresse candidate, toutes deux normalisées
    (minuscules, sans accents, abréviations développées via la table extraite
-   des données SITG).
+   des données SITG). Certaines abréviations sont ambiguës (ex. "j-d" ->
+   "Jean-Daniel" OU "Jacob-Daniel") : on essaie toutes les interprétations de
+   la requête et on garde la meilleure — le reste de l'adresse (nom de rue,
+   numéro) départage naturellement.
 2. Concordance du numéro de rue : bonus s'il correspond exactement, pénalité
    notable s'il est présent dans la requête mais différent du candidat (une
    rue correcte avec le mauvais numéro reste un mauvais géocodage). Une plage
@@ -33,25 +36,89 @@ _HOUSE_NUMBER_MISMATCH_PENALTY = 25.0
 
 
 @lru_cache(maxsize=1)
-def _abbr_to_full() -> dict[str, str]:
+def _abbr_to_full() -> dict[str, list[str]]:
     if not ABBR_TO_FULL_PATH.exists():
         return {}
     return json.loads(ABBR_TO_FULL_PATH.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def _abbr_regex() -> re.Pattern | None:
+    """Regex unique pour toutes les abréviations, y compris celles à plusieurs
+    caractères non-mots (ex. "j-d", "rd-pt."). Doit s'appliquer AVANT le retrait
+    de la ponctuation, sinon une clé comme "j-d" serait déjà scindée en deux
+    tokens isolés ("j", "d") au moment de la recherche dans le dictionnaire.
+    """
+    abbr_to_full = _abbr_to_full()
+    if not abbr_to_full:
+        return None
+    keys = sorted(abbr_to_full.keys(), key=len, reverse=True)
+    pattern = "|".join(re.escape(k) for k in keys)
+    return re.compile(rf"(?<!\w)(?:{pattern})(?!\w)", re.IGNORECASE)
 
 
 def _strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
 
-def normalize_address(text: str) -> str:
-    """Normalise une adresse pour comparaison : minuscules, sans accents,
-    ponctuation retirée, abréviations de type de voie développées."""
-    abbr_to_full = _abbr_to_full()
-    text = _strip_accents(text.lower())
+def _finalize(text: str) -> str:
     text = re.sub(r"[^\w\s]", " ", text)
-    tokens = text.split()
-    expanded = [_strip_accents(abbr_to_full.get(tok, tok).lower()) for tok in tokens]
-    return " ".join(expanded)
+    return " ".join(text.split())
+
+
+def normalize_address(text: str) -> str:
+    """Normalise un texte de référence (ex. l'adresse officielle d'un hit) :
+    minuscules, sans accents, abréviations développées (première forme connue
+    si plusieurs existent), ponctuation retirée. Les adresses officielles ne
+    contiennent normalement pas d'abréviation ambiguë : pour la requête
+    utilisateur, préférer `normalize_address_variants`.
+    """
+    abbr_to_full = _abbr_to_full()
+    stripped = _strip_accents(text.lower())
+    regex = _abbr_regex()
+    if regex is not None:
+        stripped = regex.sub(
+            lambda m: _strip_accents(abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower()),
+            stripped,
+        )
+    return _finalize(stripped)
+
+
+def normalize_address_variants(text: str) -> list[str]:
+    """Comme `normalize_address`, mais retourne une variante par interprétation
+    possible si le texte contient une abréviation ambiguë (ex. "j-d" peut
+    désigner "Jean-Daniel" ou "Jacob-Daniel"). Le reste des abréviations n'est
+    développé qu'une fois (première forme connue) pour éviter une explosion
+    combinatoire ; en pratique une requête ne contient jamais deux abréviations
+    ambiguës en même temps.
+    """
+    abbr_to_full = _abbr_to_full()
+    regex = _abbr_regex()
+    stripped = _strip_accents(text.lower())
+    if regex is None:
+        return [_finalize(stripped)]
+
+    ambiguous_match = next(
+        (m for m in regex.finditer(stripped) if len(abbr_to_full.get(m.group(0).lower(), [])) > 1),
+        None,
+    )
+    if ambiguous_match is None:
+        return [normalize_address(text)]
+
+    ambiguous_span = ambiguous_match.span()
+    candidates = abbr_to_full[ambiguous_match.group(0).lower()]
+
+    variants = []
+    for candidate in candidates:
+        chosen = _strip_accents(candidate.lower())
+
+        def repl(m: re.Match, _chosen: str = chosen, _span: tuple[int, int] = ambiguous_span) -> str:
+            if m.span() == _span:
+                return _chosen
+            return _strip_accents(abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower())
+
+        variants.append(_finalize(regex.sub(repl, stripped)))
+    return variants
 
 
 _HOUSE_NUMBER = r"\d+[a-zA-Z]?"
@@ -81,19 +148,22 @@ def extract_house_numbers(text: str) -> set[str]:
 def compute_score(query: str, hit: dict) -> float:
     """Calcule un score de confiance 0-100 pour un hit Meilisearch donné une requête.
 
-    La similarité est calculée à la fois sur l'adresse seule et sur
-    adresse + localité/commune, et on garde le maximum : mentionner
+    La similarité est calculée sur toutes les variantes normalisées de la
+    requête (une seule si aucune abréviation ambiguë), à la fois contre
+    l'adresse seule et adresse+localité, en gardant le maximum : mentionner
     correctement "Genève" doit pouvoir aider le score, mais son absence
     ne doit jamais en diluer un qui serait déjà parfait sans elle.
     """
-    normalized_query = normalize_address(query)
+    query_variants = normalize_address_variants(query)
     address_only = normalize_address(hit.get("adresse", ""))
     with_locality = normalize_address(
         " ".join(p for p in [hit.get("adresse", ""), hit.get("locality", ""), hit.get("commune", "")] if p)
     )
+
     similarity = max(
-        fuzz.token_set_ratio(normalized_query, address_only),
-        fuzz.token_set_ratio(normalized_query, with_locality),
+        fuzz.token_set_ratio(q, target)
+        for q in query_variants
+        for target in (address_only, with_locality)
     )
 
     query_numbers = extract_house_numbers(query)

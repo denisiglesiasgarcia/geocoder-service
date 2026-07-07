@@ -7,6 +7,7 @@ Source : https://ge.ch/sitg/geodata/SITG/OPENDATA/CAD_ADRESSE-SHP.zip
 
 import json
 import os
+import re
 from pathlib import Path
 
 import meilisearch
@@ -25,10 +26,10 @@ _LV95_TO_WGS84 = Transformer.from_crs("EPSG:2056", "EPSG:4326", always_xy=True)
 
 # Synonymes manuels non couverts par les abréviations du jeu de données
 # (ex. TYPABR pour "rue" est déjà "rue", donc "r." n'apparaît jamais comme clé).
-_EXTRA_ABBR_TO_FULL: dict[str, str] = {
-    "r": "Rue",
-    "av": "Avenue",
-    "bd": "Boulevard",
+_EXTRA_ABBR_TO_FULL: dict[str, list[str]] = {
+    "r": ["Rue"],
+    "av": ["Avenue"],
+    "bd": ["Boulevard"],
 }
 
 
@@ -66,36 +67,101 @@ def _normalize_key(token: str) -> str:
     return token.strip().rstrip(".").lower()
 
 
-def _build_abbr_to_full() -> dict[str, str]:
-    """Construit abréviation (normalisée) -> forme complète, à partir des couples
-    TYPABR/TYVOIE réellement présents dans les données (source de vérité)."""
+def _build_typevoie_abbr_to_full() -> dict[str, list[str]]:
+    """Construit abréviation (normalisée) -> formes complètes possibles, à partir
+    des couples TYPABR/TYVOIE réellement présents dans les données (source de
+    vérité). Sans ambiguïté connue, mais on garde une liste pour rester
+    cohérent avec _build_forename_abbr_to_full (voir plus bas)."""
     sf = shapefile.Reader(str(SHAPEFILE_PATH), encoding="utf-8")
     fields = [f[0] for f in sf.fields[1:]]
     typabr_idx = fields.index("TYPABR")
     tyvoie_idx = fields.index("TYVOIE")
 
-    abbr_to_full: dict[str, str] = dict(_EXTRA_ABBR_TO_FULL)
+    abbr_to_full: dict[str, list[str]] = {k: list(v) for k, v in _EXTRA_ABBR_TO_FULL.items()}
     for rec in sf.iterRecords():
         abbr, full = rec[typabr_idx], rec[tyvoie_idx]
         if not abbr or not full:
             continue
         key = _normalize_key(abbr)
         if key and key != _normalize_key(full):
-            abbr_to_full.setdefault(key, full)
+            candidates = abbr_to_full.setdefault(key, [])
+            if full not in candidates:
+                candidates.append(full)
     return abbr_to_full
 
 
-def _build_meilisearch_synonyms(abbr_to_full: dict[str, str]) -> dict[str, list[str]]:
-    """Synonymes bidirectionnels pour Meilisearch (abréviation <-> forme complète)."""
+def _is_already_abbreviated(liant: str) -> bool:
+    """Ex. 'J.-F' est déjà une forme abrégée (chaque partie ne fait qu'une lettre)."""
+    parts = re.split(r"[.\-]+", liant)
+    return all(len(p) <= 1 for p in parts if p)
+
+
+def _build_forename_abbr_to_full() -> dict[str, list[str]]:
+    """Génère des abréviations d'initiales pour les prénoms composés du champ
+    LIANT (ex. 'Jacob-Daniel' -> 'j-d', 'jd', 'j.d'), pour matcher des requêtes
+    comme "Av. J-D Maillard" qui n'utilisent pas la forme développée officielle.
+    Entièrement dérivé des données, sans dictionnaire externe.
+
+    Les mêmes initiales peuvent correspondre à plusieurs prénoms composés
+    distincts (ex. "j-d" -> "Jean-Daniel" ET "Jacob-Daniel" existent tous les
+    deux) : on garde donc toutes les correspondances plutôt que d'en choisir
+    une arbitrairement, et on laisse le score départager via le reste de
+    l'adresse (nom de rue, numéro).
+    """
+    sf = shapefile.Reader(str(SHAPEFILE_PATH), encoding="utf-8")
+    fields = [f[0] for f in sf.fields[1:]]
+    liant_idx = fields.index("LIANT")
+
+    abbr_to_full: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    for rec in sf.iterRecords():
+        liant = (rec[liant_idx] or "").strip(" .-")
+        if not liant or "-" not in liant or liant in seen:
+            continue
+        seen.add(liant)
+        if _is_already_abbreviated(liant):
+            continue
+
+        parts = [p for p in liant.split("-") if p]
+        if len(parts) < 2:
+            continue
+        initials = [p[0] for p in parts]
+        for variant in {
+            "-".join(initials).lower(),
+            ".".join(initials).lower(),
+            "".join(initials).lower(),
+        }:
+            candidates = abbr_to_full.setdefault(variant, [])
+            if liant not in candidates:
+                candidates.append(liant)
+    return abbr_to_full
+
+
+def _build_abbr_to_full() -> dict[str, list[str]]:
+    """Table complète abréviation -> formes complètes possibles : types de voie
+    (TYPABR/TYVOIE) et initiales de prénoms composés (LIANT), les deux dérivés
+    des données SITG."""
+    abbr_to_full = _build_typevoie_abbr_to_full()
+    for abbr, candidates in _build_forename_abbr_to_full().items():
+        existing = abbr_to_full.setdefault(abbr, [])
+        for candidate in candidates:
+            if candidate not in existing:
+                existing.append(candidate)
+    return abbr_to_full
+
+
+def _build_meilisearch_synonyms(abbr_to_full: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Synonymes bidirectionnels pour Meilisearch (abréviation <-> formes complètes)."""
     synonyms: dict[str, list[str]] = {}
-    for abbr, full in abbr_to_full.items():
-        synonyms.setdefault(abbr, [])
-        if full not in synonyms[abbr]:
-            synonyms[abbr].append(full)
-        full_key = full.lower()
-        synonyms.setdefault(full_key, [])
-        if abbr not in synonyms[full_key]:
-            synonyms[full_key].append(abbr)
+    for abbr, candidates in abbr_to_full.items():
+        group = synonyms.setdefault(abbr, [])
+        for full in candidates:
+            if full not in group:
+                group.append(full)
+            full_key = full.lower()
+            full_group = synonyms.setdefault(full_key, [])
+            if abbr not in full_group:
+                full_group.append(abbr)
     return synonyms
 
 

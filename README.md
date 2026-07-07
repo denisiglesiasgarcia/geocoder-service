@@ -33,28 +33,32 @@ geocode("Av. de Thonex 30", limit=3)
   Le fichier `.cpg` indique un encodage UTF-8 — c'est déjà géré dans `ingest.py`.
 - **Synonymes/abréviations** : construits automatiquement à partir des couples
   `TYPABR`/`TYVOIE` réellement présents dans les données (`ch.`↔`Chemin`,
-  `av.`↔`Avenue`, etc.), persistés dans `data/abbr_to_full.json` et réutilisés
-  à la fois pour les synonymes Meilisearch et pour le score.
+  `av.`↔`Avenue`, etc.) et des initiales de prénoms composés du champ `LIANT`
+  (ex. "j-d" ↔ "Jacob-Daniel", pour matcher "Av. J-D Maillard"). Persistés dans
+  `data/abbr_to_full.json` (`abréviation -> liste de formes complètes`) et
+  réutilisés à la fois pour les synonymes Meilisearch et pour le score. Les
+  mêmes initiales peuvent désigner plusieurs prénoms distincts (ex. "j-d" =
+  "Jean-Daniel" OU "Jacob-Daniel") : les deux sont gardés, et c'est le reste de
+  l'adresse (nom de rue, numéro) qui départage via le score.
 - **Score (0-100)** : calculé côté client (`score.py`), pas seulement le
   `_rankingScore` interne de Meilisearch (trop grossier). Deux signaux :
   similarité textuelle (`rapidfuzz.token_set_ratio`, sur adresse et
-  adresse+localité, en gardant le maximum) + bonus/malus sur la concordance
-  exacte du numéro de rue (une plage en fin de requête comme "51-53" accepte
-  l'une ou l'autre borne, les deux existant souvent comme adresses distinctes).
+  adresse+localité, en essayant toutes les interprétations d'une abréviation
+  ambiguë, en gardant le maximum) + bonus/malus sur la concordance exacte du
+  numéro de rue (une plage en fin de requête comme "51-53" accepte l'une ou
+  l'autre borne, les deux existant souvent comme adresses distinctes).
 - **`ingest.py` vérifie que le nombre de documents indexés correspond au nombre
   d'enregistrements source** et fait échouer l'ingestion sinon. Une ingestion
   précédente avait silencieusement perdu ~18% des adresses (deux lots de 5000
   rejetés par Meilisearch à cause d'IDPADR avec un espace parasite) sans qu'aucune
   erreur ne remonte — d'où ce garde-fou explicite plutôt qu'un simple print.
 
-Vérifié sur les 107 adresses de `notebooks/test_adresses.csv` : 92/107 avec un
+Vérifié sur les 107 adresses de `tests/test_adresses.csv` : 93/107 avec un
 score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
 `compare.py`).
 
 ## Limites connues
 
-- Les abréviations de prénoms composés (ex. "J-D" pour "Jacob-Daniel") ne sont
-  pas résolues — nécessiterait un dictionnaire dédié.
 - Les adresses avec plusieurs fautes de frappe cumulées (ex. abréviation de
   type de voie non reconnue + nom de rue mal orthographié) peuvent ne
   retourner aucun résultat (ex. "Bvd Jaous Fazy 23").
