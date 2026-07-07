@@ -13,6 +13,17 @@ cp .env.example .env   # puis changer MEILI_MASTER_KEY
 docker compose --env-file .env up -d
 ```
 
+`MEILI_MASTER_KEY` doit faire au moins 16 octets (exigence Meilisearch : "Use
+a secure, randomly generated string"). Générer une valeur adaptée :
+
+```bash
+openssl rand -base64 32
+# ou, sans openssl :
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Copier le résultat dans `.env` à la place de la valeur d'exemple.
+
 Ça suffit : `docker compose up` démarre Meilisearch, télécharge et indexe les
 54k adresses SITG (job `ingest`, ~15s, ignoré automatiquement s'il tourne à
 nouveau et que l'index est déjà à jour), puis démarre l'API sur
