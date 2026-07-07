@@ -10,10 +10,46 @@ services:
     volumes:
       - meili_data:/meili_data
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7700/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
       interval: 5s
       timeout: 3s
       retries: 10
 
+  # Job unique : télécharge les données SITG et (re)construit l'index si besoin
+  # (ingest.py est idempotent — ignore l'étape si l'index est déjà à jour).
+  ingest:
+    build: .
+    command: sh -c "python -m geocoder_service.download && python -m geocoder_service.ingest"
+    environment:
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY must be set (see .env.example)}
+    volumes:
+      - geocoder_data:/app/data
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MEILI_URL: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY must be set (see .env.example)}
+    volumes:
+      - geocoder_data:/app/data
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+      ingest:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   meili_data:
+  geocoder_data:

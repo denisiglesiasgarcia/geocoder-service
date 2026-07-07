@@ -14,11 +14,15 @@ INDEX_NAME = "adresses_ge"
 _client: meilisearch.Client | None = None
 
 
-def _get_index():
+def get_client() -> meilisearch.Client:
     global _client
     if _client is None:
         _client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
-    return _client.index(INDEX_NAME)
+    return _client
+
+
+def _get_index():
+    return get_client().index(INDEX_NAME)
 
 
 def geocode(query: str, *, limit: int = 5, candidate_pool: int = 20) -> list[dict]:

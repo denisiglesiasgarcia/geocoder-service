@@ -8,6 +8,7 @@ Source : https://ge.ch/sitg/geodata/SITG/OPENDATA/CAD_ADRESSE-SHP.zip
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import meilisearch
@@ -189,8 +190,29 @@ def _build_meilisearch_synonyms(abbr_to_full: dict[str, list[str]]) -> dict[str,
     return synonyms
 
 
+def _already_indexed(client: meilisearch.Client, expected_count: int) -> bool:
+    """Évite de reconstruire l'index à chaque redémarrage du conteneur si les
+    données n'ont pas changé (ingestion coûte ~15s pour 54k documents)."""
+    try:
+        stats = client.index(INDEX_NAME).get_stats()
+    except Exception:
+        return False
+    return stats.number_of_documents == expected_count
+
+
 def main() -> None:
+    force = "--force" in sys.argv
     client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
+
+    records = _load_records()
+    print(f"{len(records)} adresses chargées depuis {SHAPEFILE_PATH.name}")
+
+    if not force and _already_indexed(client, len(records)):
+        print(
+            f"Index '{INDEX_NAME}' déjà à jour ({len(records)} documents) — "
+            "ingestion ignorée (utiliser --force pour forcer)."
+        )
+        return
 
     typevoie_abbr_to_full = _build_typevoie_abbr_to_full()
     abbr_to_full = _build_abbr_to_full()
@@ -200,7 +222,18 @@ def main() -> None:
     print(f"Table abréviation -> forme complète écrite dans {ABBR_TO_FULL_PATH.name} "
           f"({len(abbr_to_full)} entrées)")
 
-    client.create_index(INDEX_NAME, {"primaryKey": "id"})
+    # Repartir d'un index propre (ex. après --force sur un index existant) :
+    # create_index échoue si l'index existe déjà, et delete_index est async
+    # (il faut attendre la tâche avant de recréer, sous peine de collision).
+    try:
+        delete_task = client.delete_index(INDEX_NAME)
+        client.wait_for_task(delete_task.task_uid, timeout_in_ms=30_000)
+    except Exception:
+        pass
+    create_task = client.create_index(INDEX_NAME, {"primaryKey": "id"})
+    finished_create = client.wait_for_task(create_task.task_uid, timeout_in_ms=30_000)
+    if finished_create.status != "succeeded":
+        raise RuntimeError(f"Échec de création de l'index : {finished_create.error}")
     index = client.index(INDEX_NAME)
 
     index.update_settings(
@@ -224,9 +257,6 @@ def main() -> None:
             },
         }
     )
-
-    records = _load_records()
-    print(f"{len(records)} adresses chargées depuis {SHAPEFILE_PATH.name}")
 
     batch_size = 5000
     for i in range(0, len(records), batch_size):
