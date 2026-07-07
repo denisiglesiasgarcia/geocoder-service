@@ -14,7 +14,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "fastexcel>=0.20.2",
     "ipykernel>=6.29.0",
+    "openpyxl>=3.1.5",
+    "polars>=1.42.1",
 ]
 
 [build-system]
