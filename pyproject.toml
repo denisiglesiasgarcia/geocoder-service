@@ -12,6 +12,11 @@ dependencies = [
     "rapidfuzz>=3.10.0",
 ]
 
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
