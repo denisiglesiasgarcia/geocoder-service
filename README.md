@@ -52,16 +52,31 @@ geocode("Av. de Thonex 30", limit=3)
   précédente avait silencieusement perdu ~18% des adresses (deux lots de 5000
   rejetés par Meilisearch à cause d'IDPADR avec un espace parasite) sans qu'aucune
   erreur ne remonte — d'où ce garde-fou explicite plutôt qu'un simple print.
+- **Suffixes de numéro** ("bis"/"ter", vérifiés sur 740 + 82 adresses réelles) :
+  "7b" est reconnu comme équivalent de "7bis" pour la concordance de numéro.
+- **Mots-vides ("stopWords")** : les types de voie complets (ex. "chemin",
+  "route") sont exclus du classement par pertinence Meilisearch, pour qu'un
+  mot très fréquent (et parfois faux — l'utilisateur se trompe de type) ne
+  l'emporte pas sur le nom de rue réel, plus rare et discriminant. Seules les
+  formes complètes sont concernées, pas les abréviations : une abréviation qui
+  est à la fois mot-vide et clé de synonyme empêchait Meilisearch de résoudre
+  le synonyme pour cette requête. Les mots de liaison génériques ("de", "des",
+  "la"...) ont été essayés puis retirés : certains noms de rue les utilisent
+  comme partie intégrante d'un nom composé (ex. "Chemin De-Verey"), donc les
+  neutraliser cassait plus de cas réels que ça n'en corrigeait.
 
-Vérifié sur les 107 adresses de `tests/test_adresses.csv` : 93/107 avec un
+Vérifié sur les 107 adresses de `tests/test_adresses.csv` : 95/107 avec un
 score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
 `compare.py`).
 
 ## Limites connues
 
-- Les adresses avec plusieurs fautes de frappe cumulées (ex. abréviation de
-  type de voie non reconnue + nom de rue mal orthographié) peuvent ne
-  retourner aucun résultat (ex. "Bvd Jaous Fazy 23").
+- Les adresses avec plusieurs fautes de frappe cumulées sur un mot rare et peu
+  discriminant (ex. "Jaous" pour "James") peuvent ne retourner aucun résultat
+  ("Bvd Jaous Fazy 23") — testé aussi avec un algorithme phonétique dédié au
+  français (FONEM, bibliothèque `abydos`), qui n'apporte qu'un gain marginal
+  sur nos cas réels (ex. Bessonnette/Bassonette : 85.7 -> 88.9 seulement) et
+  n'a donc pas été intégré.
 - Scope volontairement limité au canton de Genève (pas de RegBL/BAN).
 
 ## Fichiers

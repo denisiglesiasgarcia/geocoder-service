@@ -150,6 +150,30 @@ def _build_abbr_to_full() -> dict[str, list[str]]:
     return abbr_to_full
 
 
+def _build_stop_words(typevoie_abbr_to_full: dict[str, list[str]]) -> list[str]:
+    """Mots à exclure du classement par pertinence (règle 'words' de Meilisearch) :
+    les types de voie (ex. "rue", "chemin") sont présents dans des milliers
+    d'adresses et ne devraient jamais dominer le nom de rue réel — surtout si
+    l'utilisateur se trompe de type (ex. "rue" au lieu de "chemin"), auquel cas
+    ce mot fréquent mais erroné ne doit pas l'emporter sur le nom de rue correct.
+
+    Seules les formes complètes (ex. "route") sont ajoutées, pas les
+    abréviations (ex. "rte") : une abréviation qui est à la fois mot-vide ET
+    clé de synonyme empêche Meilisearch de résoudre le synonyme pour cette
+    requête (vérifié : "Route de Sauverny" trouve des résultats, "Rte de
+    Sauverny" n'en trouvait plus aucun tant que "rte" était aussi un mot-vide).
+    Comme la résolution de synonymes convertit de toute façon l'abréviation en
+    forme complète, mettre cette dernière en mot-vide suffit dans les deux cas.
+
+    Volontairement PAS de mots de liaison génériques ("de", "des", "la"...) :
+    certains noms de rue de Genève les utilisent comme partie intégrante d'un
+    nom composé (ex. "Chemin De-Verey", "Chemin J.-Des-Arts"), donc les
+    neutraliser globalement casse plus de cas réels que ça n'en corrige
+    (vérifié : régression sur "Ch. De l'Avanchet", "Ch. Des Chênes", etc.).
+    """
+    return sorted({c.lower() for candidates in typevoie_abbr_to_full.values() for c in candidates})
+
+
 def _build_meilisearch_synonyms(abbr_to_full: dict[str, list[str]]) -> dict[str, list[str]]:
     """Synonymes bidirectionnels pour Meilisearch (abréviation <-> formes complètes)."""
     synonyms: dict[str, list[str]] = {}
@@ -168,6 +192,7 @@ def _build_meilisearch_synonyms(abbr_to_full: dict[str, list[str]]) -> dict[str,
 def main() -> None:
     client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
 
+    typevoie_abbr_to_full = _build_typevoie_abbr_to_full()
     abbr_to_full = _build_abbr_to_full()
     ABBR_TO_FULL_PATH.write_text(
         json.dumps(abbr_to_full, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -184,6 +209,7 @@ def main() -> None:
             "filterableAttributes": ["postalCode", "commune", "typeVoie"],
             "sortableAttributes": ["postalCode"],
             "synonyms": _build_meilisearch_synonyms(abbr_to_full),
+            "stopWords": _build_stop_words(typevoie_abbr_to_full),
             "rankingRules": [
                 "words",
                 "typo",

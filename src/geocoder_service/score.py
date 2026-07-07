@@ -121,8 +121,22 @@ def normalize_address_variants(text: str) -> list[str]:
     return variants
 
 
-_HOUSE_NUMBER = r"\d+[a-zA-Z]?"
+_HOUSE_NUMBER = r"\d+[a-zA-Z]*"
 _RANGE_AT_END_RE = re.compile(rf"({_HOUSE_NUMBER})\s*-\s*({_HOUSE_NUMBER})\s*$")
+
+# Suffixes de numéro de rue : abréviation d'une lettre -> forme complète.
+# Vérifié sur les données (740 adresses en "BIS", 82 en "TER" dans CAD_ADRESSE) :
+# les utilisateurs écrivent couramment "7b"/"7t" pour "7bis"/"7ter".
+_HOUSE_NUMBER_SUFFIX_EXPANSION = {"b": "bis", "t": "ter"}
+_HOUSE_NUMBER_SUFFIX_RE = re.compile(r"^(\d+)([a-z]+)$")
+
+
+def _normalize_house_number(number: str) -> str:
+    match = _HOUSE_NUMBER_SUFFIX_RE.match(number.lower())
+    if not match:
+        return number.lower()
+    digits, suffix = match.groups()
+    return digits + _HOUSE_NUMBER_SUFFIX_EXPANSION.get(suffix, suffix)
 
 
 def extract_house_numbers(text: str) -> set[str]:
@@ -139,10 +153,13 @@ def extract_house_numbers(text: str) -> set[str]:
     """
     range_match = _RANGE_AT_END_RE.search(text)
     if range_match:
-        return {range_match.group(1).lower(), range_match.group(2).lower()}
+        return {
+            _normalize_house_number(range_match.group(1)),
+            _normalize_house_number(range_match.group(2)),
+        }
 
     matches = re.findall(rf"\b{_HOUSE_NUMBER}\b", text)
-    return {matches[-1].lower()} if matches else set()
+    return {_normalize_house_number(matches[-1])} if matches else set()
 
 
 def compute_score(query: str, hit: dict) -> float:
@@ -167,7 +184,7 @@ def compute_score(query: str, hit: dict) -> float:
     )
 
     query_numbers = extract_house_numbers(query)
-    hit_number = str(hit.get("houseNumber") or "").lower()
+    hit_number = _normalize_house_number(str(hit.get("houseNumber") or ""))
 
     score = similarity
     if query_numbers and hit_number:
