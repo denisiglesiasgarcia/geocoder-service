@@ -4,9 +4,15 @@ reclasse avec notre propre score de confiance (voir score.py).
 Deux clients Meilisearch coexistent : le client synchrone officiel
 (`meilisearch`), utilisé par `geocode()` (compare.py, notebooks, scripts) ;
 et un client HTTP asynchrone (`httpx`) pour `geocode_async()`/`api.py`, le
-paquet `meilisearch` officiel n'ayant pas de client async."""
+paquet `meilisearch` officiel n'ayant pas de client async.
+
+Les deux utilisent une clé API `search`-only (voir `_search_api_key` et
+`ingest.py::_write_search_api_key`) plutôt que MEILI_MASTER_KEY : le serveur
+qui répond aux requêtes HTTP publiques n'a ainsi jamais besoin d'un accès
+admin à Meilisearch (suppression d'index, gestion des clés, etc.)."""
 
 import os
+from pathlib import Path
 
 import httpx
 import meilisearch
@@ -15,16 +21,27 @@ from geocoder_service.score import compute_score
 
 MEILI_URL = os.environ.get("MEILI_URL", "http://localhost:7700")
 MEILI_MASTER_KEY = os.environ.get("MEILI_MASTER_KEY", "dev_master_key_change_me")
+SEARCH_API_KEY_PATH = Path(__file__).parent.parent.parent / "data" / "search_api_key.txt"
 INDEX_NAME = "adresses_ge"
 
 _client: meilisearch.Client | None = None
 _async_client: httpx.AsyncClient | None = None
 
 
+def _search_api_key() -> str:
+    """Clé `search`-only écrite par `ingest.py` au démarrage. Si absente (ex.
+    ingestion pas encore lancée, environnement de dev sans Docker), on
+    retombe sur MEILI_MASTER_KEY plutôt que d'échouer."""
+    try:
+        return SEARCH_API_KEY_PATH.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return MEILI_MASTER_KEY
+
+
 def get_client() -> meilisearch.Client:
     global _client
     if _client is None:
-        _client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
+        _client = meilisearch.Client(MEILI_URL, _search_api_key())
     return _client
 
 
@@ -37,7 +54,7 @@ def get_async_client() -> httpx.AsyncClient:
     if _async_client is None:
         _async_client = httpx.AsyncClient(
             base_url=MEILI_URL,
-            headers={"Authorization": f"Bearer {MEILI_MASTER_KEY}"},
+            headers={"Authorization": f"Bearer {_search_api_key()}"},
         )
     return _async_client
 

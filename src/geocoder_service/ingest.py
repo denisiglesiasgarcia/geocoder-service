@@ -18,6 +18,7 @@ from pyproj import Transformer
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 SHAPEFILE_PATH = DATA_DIR / "CAD_ADRESSE.shp"
 ABBR_TO_FULL_PATH = DATA_DIR / "abbr_to_full.json"
+SEARCH_API_KEY_PATH = DATA_DIR / "search_api_key.txt"
 
 MEILI_URL = os.environ.get("MEILI_URL", "http://localhost:7700")
 MEILI_MASTER_KEY = os.environ.get("MEILI_MASTER_KEY", "dev_master_key_change_me")
@@ -212,9 +213,26 @@ def _already_indexed(client: meilisearch.Client, expected_count: int) -> bool:
     return stats.number_of_documents == expected_count
 
 
+def _write_search_api_key(client: meilisearch.Client) -> None:
+    """Écrit la clé "Default Search API Key" de Meilisearch (créée
+    automatiquement, action `search` uniquement) dans un fichier lu par
+    search.py au démarrage de l'API — pour que le serveur qui répond aux
+    requêtes HTTP n'ait jamais besoin de MEILI_MASTER_KEY (accès complet :
+    suppression d'index, gestion des clés, etc.), seulement de quoi chercher.
+    Exécuté à chaque démarrage (même si l'ingestion elle-même est ignorée),
+    pour que le fichier existe toujours après un redémarrage de conteneur.
+    """
+    search_key = next((k.key for k in client.get_keys().results if k.actions == ["search"]), None)
+    if search_key is None:
+        print("Avertissement : aucune clé Meilisearch 'search' trouvée, MEILI_MASTER_KEY sera utilisée à la place.")
+        return
+    SEARCH_API_KEY_PATH.write_text(search_key, encoding="utf-8")
+
+
 def main() -> None:
     force = "--force" in sys.argv
     client = meilisearch.Client(MEILI_URL, MEILI_MASTER_KEY)
+    _write_search_api_key(client)
 
     records = _load_records()
     print(f"{len(records)} adresses chargées depuis {SHAPEFILE_PATH.name}")

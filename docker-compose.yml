@@ -3,7 +3,11 @@ services:
     image: getmeili/meilisearch:v1.11
     restart: unless-stopped
     ports:
-      - "7700:7700"
+      # Lié à 127.0.0.1 uniquement (pas 0.0.0.0) : accessible pour le
+      # développement local de l'API hors Docker (voir README), mais pas
+      # depuis le réseau/Internet. Le service `api` y accède via le réseau
+      # Docker interne (`meilisearch:7700`), sans passer par ce port publié.
+      - "127.0.0.1:7700:7700"
     environment:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY must be set (see .env.example)}
       MEILI_NO_ANALYTICS: "true"

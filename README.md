@@ -35,6 +35,17 @@ curl "http://localhost:8000/search?q=Av.%20J-D%20Maillard,%207&limit=3"
 curl "http://localhost:8000/health"
 ```
 
+Endpoint supplémentaire, `/api/v2/search`, compatible avec le format de
+réponse de l'API SITG Lab v2 (`geocodage.sitg-lab.ch/api/v2/search`) — un
+client écrit contre cette API (ex.
+[`sitg-geocode`](https://github.com/denisiglesiasgarcia/sitg-geocode)) peut
+pointer sur ce service à la place en changeant uniquement l'URL de base, sans
+aucun changement de code (voir `sitg_compat.py`) :
+
+```bash
+curl "http://localhost:8000/api/v2/search?q=Av.%20J-D%20Maillard,%207&limit=3"
+```
+
 Pour forcer une réindexation (ex. après une mise à jour des données SITG) :
 
 ```bash
@@ -64,8 +75,12 @@ geocode("Av. de Thonex 30", limit=3)
 # [{"adresse": "Avenue de Thônex 30", "commune": "Chêne-Bourg", "score": 100.0, ...}, ...]
 ```
 
-Ou via l'API HTTP (`GET /search?q=...&limit=...`, `GET /health`) une fois le
-service démarré.
+Ou via l'API HTTP (`GET /search?q=...&limit=...`, `GET /api/v2/search?...`,
+`GET /health`) une fois le service démarré — l'API est entièrement
+asynchrone (FastAPI + `httpx`), voir `geocode_async()` pour l'équivalent
+asynchrone de `geocode()` (utilisé en interne par l'API, mais aussi
+directement utilisable, ex. avec `asyncio.gather` pour géocoder beaucoup
+d'adresses en parallèle sans bloquer sur chaque appel réseau).
 
 Voir aussi [`notebooks/examples.ipynb`](notebooks/examples.ipynb) pour des exemples exécutables
 (abréviations, initiales ambiguës, suffixes bis/ter, plages de numéros, API
@@ -99,6 +114,27 @@ HTTP, comparaison sur le jeu de test). Nécessite `uv sync` (dépendance de dev
   erreur ne remonte — d'où ce garde-fou explicite plutôt qu'un simple print.
 - **Suffixes de numéro** ("bis"/"ter", vérifiés sur 740 + 82 adresses réelles) :
   "7b" est reconnu comme équivalent de "7bis" pour la concordance de numéro.
+  Un numéro suivi d'une lettre isolée par un espace ("14 A") est aussi
+  reconnu comme équivalent de "14A" (ancré en fin de requête, pour ne pas
+  confondre avec un numéro placé en tête, ex. "12 rue Jean-Charles Amat").
+- **Codes d'entrée cadastraux** (ex. "0 E01", "O03") : un placeholder "0"
+  suivi d'une lettre et de 1-2 chiffres, présent dans certains exports SITG
+  pour désigner une entrée de bâtiment sans numéro de rue propre. "0"
+  n'existe comme numéro de rue nulle part dans `CAD_ADRESSE` : traité comme
+  absence de numéro (pas de bonus/malus) plutôt que comme un vrai numéro, et
+  ces codes sont retirés du texte avant le calcul de similarité pour ne pas
+  le polluer avec des tokens que l'adresse officielle ne contiendra jamais.
+- **Abréviations manuelles supplémentaires**, non couvertes par les données
+  SITG (`TYPABR`/`TYVOIE`) car pas des types de voie à proprement parler :
+  `bvd`/`sq`/`tsse`/`car`/`ven`/`pt` (variantes courantes de
+  boulevard/square/terrasse/carrefour/venelle/pont) et `st`/`ste` pour
+  "Saint"/"Sainte" (préfixe très fréquent *à l'intérieur* des noms de rue,
+  ex. "Rue St-Joseph", 836 adresses concernées).
+- **Initiales composées au format "X.-Y."** (point et tiret combinés, ex.
+  "J.-A.-GAUTIER", "F.-A.-GRISON") : la table d'abréviations générait bien
+  des variantes "j-a"/"j.a"/"ja" à partir du champ `LIANT`, mais pas la
+  combinaison point+tiret que ce format utilise réellement — plusieurs
+  dizaines d'adresses concernées.
 - **Mots-vides ("stopWords")** : les types de voie complets (ex. "chemin",
   "route") sont exclus du classement par pertinence Meilisearch, pour qu'un
   mot très fréquent (et parfois faux — l'utilisateur se trompe de type) ne
@@ -112,7 +148,28 @@ HTTP, comparaison sur le jeu de test). Nécessite `uv sync` (dépendance de dev
 
 Vérifié sur les 107 adresses de `tests/test_adresses.csv` : 95/107 avec un
 score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
-`compare.py`).
+`compare.py`). Vérifié aussi sur un jeu plus large et volontairement
+"bruité" (`tests/test_adresses_20260707_152332.csv`, ~130k adresses avec
+abréviations, fautes de frappe, casse aléatoire, codes d'entrée cadastraux,
+etc.) : 97.64% avec un score ≥ 95 (contre 94.87% avant les correctifs
+ci-dessus).
+
+## Sécurité
+
+- Le serveur qui répond aux requêtes HTTP (`search.py`/`api.py`) n'utilise
+  jamais `MEILI_MASTER_KEY` (accès admin complet : suppression d'index,
+  gestion des clés...) pour ses requêtes de recherche : `ingest.py` écrit au
+  démarrage la clé Meilisearch "Default Search API Key" (action `search`
+  uniquement, créée automatiquement par Meilisearch) dans
+  `data/search_api_key.txt`, relue par `search.py`. `MEILI_MASTER_KEY` reste
+  nécessaire au conteneur `api` pour l'étape d'ingestion elle-même (même
+  conteneur, avant le lancement d'uvicorn) — pas encore séparée dans un
+  service à part.
+- Le port Meilisearch (`7700`) est lié à `127.0.0.1` uniquement dans
+  `docker-compose.yml`, pas `0.0.0.0` : accessible pour le développement
+  local de l'API hors Docker, mais pas depuis le réseau. Le conteneur `api`
+  y accède via le réseau Docker interne (`meilisearch:7700`), indépendamment
+  de ce port publié.
 
 ## Limites connues
 
@@ -128,13 +185,19 @@ score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
 
 - `docker-compose.yml` — Meilisearch + API (l'API attend Meilisearch puis
   s'auto-indexe au démarrage, voir `entrypoint.sh`), volume `geocoder_data`
-  pour persister les données téléchargées et `abbr_to_full.json`.
+  pour persister les données téléchargées, `abbr_to_full.json` et
+  `search_api_key.txt`. Port Meilisearch lié à `127.0.0.1` (voir Sécurité).
 - `Dockerfile` / `entrypoint.sh` — image de l'API : attend Meilisearch,
   télécharge/indexe si besoin (idempotent), puis lance uvicorn.
 - `src/geocoder_service/download.py` — téléchargement/extraction des données (idempotent).
 - `src/geocoder_service/ingest.py` — indexation Meilisearch + génération des synonymes
-  (idempotent : ignore si l'index est déjà à jour, `--force` pour forcer).
+  (idempotent : ignore si l'index est déjà à jour, `--force` pour forcer) +
+  écriture de la clé API `search`-only (voir Sécurité).
 - `src/geocoder_service/score.py` — calcul du score de confiance.
-- `src/geocoder_service/search.py` — point d'entrée `geocode()`.
-- `src/geocoder_service/api.py` — API HTTP (FastAPI) exposant `geocode()`.
+- `src/geocoder_service/search.py` — points d'entrée `geocode()` (synchrone) et
+  `geocode_async()` (asynchrone, `httpx`).
+- `src/geocoder_service/api.py` — API HTTP (FastAPI, asynchrone) exposant
+  `geocode_async()` sur `/search` et `/api/v2/search`.
+- `src/geocoder_service/sitg_compat.py` — traduit les résultats au format de
+  l'API SITG Lab v2, pour `/api/v2/search`.
 - `src/geocoder_service/compare.py` — script de comparaison sur `tests/test_adresses.csv`.
