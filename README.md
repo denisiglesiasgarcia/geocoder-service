@@ -1,10 +1,10 @@
 # geocoder-service
 
-Géocodeur d'adresses du canton de Genève, basé sur les données ouvertes SITG
+→→Géocodeur d'adresses du canton de Genève, basé sur les données ouvertes SITG
 (`CAD_ADRESSE`) et Meilisearch. Alternative auto-hébergée à l'API SITG Lab
-(`geocodage.sitg-lab.ch`), scopée volontairement au canton de Genève.
+(`geocodage.sitg-lab.ch`).
 
-## Déploiement local (Docker, tout inclus)
+## Déploiement local (Docker)
 
 ```bash
 cd geocoder-service
@@ -24,16 +24,18 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 Copier le résultat dans `.env` à la place de la valeur d'exemple.
 
-Ça suffit : le conteneur `api` télécharge et indexe lui-même les 54k adresses
-SITG à son démarrage (`entrypoint.sh` : attend Meilisearch, puis
-`download` + `ingest`, ~15s) avant de lancer le serveur — pas de service
-séparé à orchestrer manuellement. Un redémarrage ne refait rien : `ingest.py`
-est idempotent (compare le nombre de documents déjà indexés).
+Le script `entrypoint.sh` va effectuer plusieurs étapes lors de la création des containers:
+1) Créer le container Meilisearch et attendre qu'il réponde
+2) Créer le container `api` (l'API FastAPI)
+  a) Télécharger les données SITG (`CAD_ADRESSE`) avec le script `download.py`
+  b) Envoyer et indexer les données dans Meilisearch avec le script `ingest.py`
 
 ```bash
 curl "http://localhost:8000/search?q=Av.%20J-D%20Maillard,%207&limit=3"
 curl "http://localhost:8000/health"
 ```
+
+### Compatible avec [`sitg-geocode`](https://github.com/denisiglesiasgarcia/sitg-geocode)
 
 Endpoint supplémentaire, `/api/v2/search`, compatible avec le format de
 réponse de l'API SITG Lab v2 (`geocodage.sitg-lab.ch/api/v2/search`) — un
@@ -50,17 +52,6 @@ Pour forcer une réindexation (ex. après une mise à jour des données SITG) :
 
 ```bash
 docker compose exec api python -m geocoder_service.ingest --force
-```
-
-## Développement local (sans Docker pour l'API)
-
-```bash
-docker compose --env-file .env up -d meilisearch   # Meilisearch seul
-uv sync
-
-uv run python -m geocoder_service.download   # télécharge + extrait CAD_ADRESSE (idempotent)
-uv run python -m geocoder_service.ingest      # (re)crée l'index et charge les 54k adresses
-uv run python -m uvicorn geocoder_service.api:app --reload   # API en rechargement à chaud
 ```
 
 ## Utilisation
