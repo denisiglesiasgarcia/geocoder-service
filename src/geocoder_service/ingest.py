@@ -31,6 +31,17 @@ _EXTRA_ABBR_TO_FULL: dict[str, list[str]] = {
     "r": ["Rue"],
     "av": ["Avenue"],
     "bd": ["Boulevard"],
+    "bvd": ["Boulevard"],
+    "sq": ["Square"],
+    "tsse": ["Terrasse"],
+    "car": ["Carrefour"],
+    "ven": ["Venelle"],
+    "pt": ["Pont"],
+    # "St"/"Ste" pour "Saint"/"Sainte" : pas un type de voie (TYPABR/TYVOIE),
+    # mais un préfixe très fréquent à l'intérieur des noms de rue eux-mêmes
+    # (ex. "Rue St-Joseph" pour "Rue Saint-Joseph", 836 adresses concernées).
+    "st": ["Saint"],
+    "ste": ["Sainte"],
 }
 
 
@@ -130,6 +141,7 @@ def _build_forename_abbr_to_full() -> dict[str, list[str]]:
         for variant in {
             "-".join(initials).lower(),
             ".".join(initials).lower(),
+            ".-".join(initials).lower(),
             "".join(initials).lower(),
         }:
             candidates = abbr_to_full.setdefault(variant, [])

@@ -61,7 +61,20 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
 
+# Code d'entrée cadastral (ex. "0 E01", "O03", "F01") : une lettre (souvent
+# précédée du placeholder "0") suivie de 1-2 chiffres, en toute fin de texte.
+# Ne correspond à aucun numéro de rue réel (voir `_PLACEHOLDER_HOUSE_NUMBER`)
+# et pollue sinon la similarité textuelle avec des tokens que l'adresse
+# officielle ne contient jamais.
+_ENTRANCE_CODE_RE = re.compile(r"\s+(?:0\s+)?[a-zA-Z]\d{1,2}\s*$", re.IGNORECASE)
+
+
+def _strip_entrance_code(text: str) -> str:
+    return _ENTRANCE_CODE_RE.sub("", text)
+
+
 def _finalize(text: str) -> str:
+    text = _strip_entrance_code(text)
     text = re.sub(r"[^\w\s]", " ", text)
     return " ".join(text.split())
 
@@ -124,6 +137,18 @@ def normalize_address_variants(text: str) -> list[str]:
 _HOUSE_NUMBER = r"\d+[a-zA-Z]*"
 _RANGE_AT_END_RE = re.compile(rf"({_HOUSE_NUMBER})\s*-\s*({_HOUSE_NUMBER})\s*$")
 
+# Un numéro suivi d'une lettre isolée par un espace (ex. "14 A", "6 C") est
+# une variante courante de "14A"/"6C" : on les recolle avant extraction.
+# Ancré en fin de texte (le numéro de rue est toujours en dernier) pour ne
+# pas confondre un numéro EN TÊTE de requête (ex. "12 rue Jean-Charles
+# Amat") avec un tel suffixe — "rue" ferait sinon 3 lettres comme "bis".
+_NUMBER_SPACE_SUFFIX_RE = re.compile(r"(\d)\s+([a-zA-Z]{1,3})\s*$")
+
+# "0" n'existe comme numéro de rue nulle part dans CAD_ADRESSE : quand une
+# requête ne contient que "0" (ex. codes d'entrée "0 E01", "0 O02"), ce n'est
+# pas un vrai numéro et ne doit donc déclencher ni bonus ni pénalité.
+_PLACEHOLDER_HOUSE_NUMBER = "0"
+
 # Suffixes de numéro de rue : abréviation d'une lettre -> forme complète.
 # Vérifié sur les données (740 adresses en "BIS", 82 en "TER" dans CAD_ADRESSE) :
 # les utilisateurs écrivent couramment "7b"/"7t" pour "7bis"/"7ter".
@@ -151,15 +176,19 @@ def extract_house_numbers(text: str) -> set[str]:
     deux existent souvent comme adresses distinctes dans les données (vérifié
     sur "Chemin de la Montagne 51" et "53", deux EGID différents).
     """
+    text = _NUMBER_SPACE_SUFFIX_RE.sub(r"\1\2", text)
+
     range_match = _RANGE_AT_END_RE.search(text)
     if range_match:
-        return {
+        numbers = {
             _normalize_house_number(range_match.group(1)),
             _normalize_house_number(range_match.group(2)),
         }
+    else:
+        matches = re.findall(rf"\b{_HOUSE_NUMBER}\b", text)
+        numbers = {_normalize_house_number(matches[-1])} if matches else set()
 
-    matches = re.findall(rf"\b{_HOUSE_NUMBER}\b", text)
-    return {_normalize_house_number(matches[-1])} if matches else set()
+    return numbers - {_PLACEHOLDER_HOUSE_NUMBER}
 
 
 def compute_score(query: str, hit: dict) -> float:
