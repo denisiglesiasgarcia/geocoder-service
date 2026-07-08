@@ -7,7 +7,12 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 
-from geocoder_service.search import aclose_async_client, geocode_async, geocode_async_raw, get_async_client
+from geocoder_service.search import (
+    aclose_async_client,
+    geocode_async,
+    geocode_async_raw,
+    get_async_client,
+)
 from geocoder_service.sitg_compat import hits_to_sitg_v2_response
 
 
@@ -33,7 +38,9 @@ async def health() -> dict:
         response.raise_for_status()
         status = response.json()
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=503, detail=f"Meilisearch indisponible : {e}") from e
+        raise HTTPException(
+            status_code=503, detail=f"Meilisearch indisponible : {e}"
+        ) from e
     return {"status": "ok", "meilisearch": status}
 
 
@@ -52,7 +59,9 @@ async def search_sitg_v2(
     q: str = Query(..., min_length=1, description="Adresse à géocoder"),
     limit: int = Query(5, ge=1, le=50, description="Nombre maximum de résultats"),
     offset: int = Query(0, ge=0, description="Décalage pour la pagination"),
-    suggest: bool = Query(False, description="Accepté pour compatibilité, sans effet ici"),
+    suggest: bool = Query(
+        False, description="Accepté pour compatibilité, sans effet ici"
+    ),
 ) -> dict:
     """Même géocodeur que `/search`, mais réponse au format de l'API SITG Lab v2
     (`geocodage.sitg-lab.ch/api/v2/search`) : un client écrit contre cette API

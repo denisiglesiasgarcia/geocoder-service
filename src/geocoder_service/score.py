@@ -26,10 +26,13 @@ import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
+from abydos.phonetic import FONEM
 from rapidfuzz import fuzz
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 ABBR_TO_FULL_PATH = DATA_DIR / "abbr_to_full.json"
+
+_fonem = FONEM()
 
 _HOUSE_NUMBER_BONUS = 5.0
 _HOUSE_NUMBER_MISMATCH_PENALTY = 25.0
@@ -58,7 +61,9 @@ def _abbr_regex() -> re.Pattern | None:
 
 
 def _strip_accents(text: str) -> str:
-    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+    )
 
 
 # Code d'entrée cadastral (ex. "0 E01", "O03", "F01") : une lettre (souvent
@@ -79,6 +84,17 @@ def _finalize(text: str) -> str:
     return " ".join(text.split())
 
 
+@lru_cache(maxsize=4096)
+def _phonetic_encode(text: str) -> str:
+    """Encode chaque mot avec FONEM (algorithme phonétique pour le français,
+    bibliothèque `abydos`) et rejoint le résultat en préservant les frontières
+    de mots (nécessaire pour `token_set_ratio`, qui compare des ensembles de
+    tokens). `text` doit déjà être normalisé (`_finalize`) — FONEM code des
+    mots, pas une phrase entière collée.
+    """
+    return " ".join(_fonem.encode(word) for word in text.split())
+
+
 def normalize_address(text: str) -> str:
     """Normalise un texte de référence (ex. l'adresse officielle d'un hit) :
     minuscules, sans accents, abréviations développées (première forme connue
@@ -91,7 +107,9 @@ def normalize_address(text: str) -> str:
     regex = _abbr_regex()
     if regex is not None:
         stripped = regex.sub(
-            lambda m: _strip_accents(abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower()),
+            lambda m: _strip_accents(
+                abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower()
+            ),
             stripped,
         )
     return _finalize(stripped)
@@ -112,7 +130,11 @@ def normalize_address_variants(text: str) -> list[str]:
         return [_finalize(stripped)]
 
     ambiguous_match = next(
-        (m for m in regex.finditer(stripped) if len(abbr_to_full.get(m.group(0).lower(), [])) > 1),
+        (
+            m
+            for m in regex.finditer(stripped)
+            if len(abbr_to_full.get(m.group(0).lower(), [])) > 1
+        ),
         None,
     )
     if ambiguous_match is None:
@@ -125,10 +147,14 @@ def normalize_address_variants(text: str) -> list[str]:
     for candidate in candidates:
         chosen = _strip_accents(candidate.lower())
 
-        def repl(m: re.Match, _chosen: str = chosen, _span: tuple[int, int] = ambiguous_span) -> str:
+        def repl(
+            m: re.Match, _chosen: str = chosen, _span: tuple[int, int] = ambiguous_span
+        ) -> str:
             if m.span() == _span:
                 return _chosen
-            return _strip_accents(abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower())
+            return _strip_accents(
+                abbr_to_full.get(m.group(0).lower(), [m.group(0)])[0].lower()
+            )
 
         variants.append(_finalize(regex.sub(repl, stripped)))
     return variants
@@ -203,7 +229,15 @@ def compute_score(query: str, hit: dict) -> float:
     query_variants = normalize_address_variants(query)
     address_only = normalize_address(hit.get("adresse", ""))
     with_locality = normalize_address(
-        " ".join(p for p in [hit.get("adresse", ""), hit.get("locality", ""), hit.get("commune", "")] if p)
+        " ".join(
+            p
+            for p in [
+                hit.get("adresse", ""),
+                hit.get("locality", ""),
+                hit.get("commune", ""),
+            ]
+            if p
+        )
     )
 
     similarity = max(
@@ -211,6 +245,18 @@ def compute_score(query: str, hit: dict) -> float:
         for q in query_variants
         for target in (address_only, with_locality)
     )
+
+    # Signal phonétique (FONEM) en complément, jamais à la place : ne fait
+    # que relever le score si la version phonétique rapproche des mots que
+    # l'orthographe seule éloignait (ex. lettres doublées/muettes) — ne peut
+    # donc jamais faire baisser un score déjà bon sur la seule orthographe.
+    phonetic_targets = (_phonetic_encode(address_only), _phonetic_encode(with_locality))
+    phonetic_similarity = max(
+        fuzz.token_set_ratio(_phonetic_encode(q), target)
+        for q in query_variants
+        for target in phonetic_targets
+    )
+    similarity = max(similarity, phonetic_similarity)
 
     query_numbers = extract_house_numbers(query)
     hit_number = _normalize_house_number(str(hit.get("houseNumber") or ""))

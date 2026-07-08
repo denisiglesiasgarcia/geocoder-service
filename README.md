@@ -56,8 +56,6 @@ docker compose exec api python -m geocoder_service.ingest --force
 
 ## Utilisation
 
-Directement en Python :
-
 ```python
 from geocoder_service.search import geocode
 
@@ -66,16 +64,7 @@ geocode("Av. de Thonex 30", limit=3)
 # [{"adresse": "Avenue de Thônex 30", "commune": "Chêne-Bourg", "score": 100.0, ...}, ...]
 ```
 
-Ou via l'API HTTP (`GET /search?q=...&limit=...`, `GET /api/v2/search?...`,
-`GET /health`) une fois le service démarré — l'API est entièrement
-asynchrone (FastAPI + `httpx`), voir `geocode_async()` pour l'équivalent
-asynchrone de `geocode()` (utilisé en interne par l'API, mais aussi
-directement utilisable, ex. avec `asyncio.gather` pour géocoder beaucoup
-d'adresses en parallèle sans bloquer sur chaque appel réseau).
-
-Voir aussi [`notebooks/examples.ipynb`](notebooks/examples.ipynb) pour des exemples exécutables
-(abréviations, initiales ambiguës, suffixes bis/ter, plages de numéros, API
-HTTP, comparaison sur le jeu de test). Nécessite `uv sync` (dépendance de dev
+Voir aussi [`notebooks/examples.ipynb`](notebooks/examples.ipynb). Nécessite `uv sync` (dépendance de dev
 `ipykernel`) et la stack Docker démarrée.
 
 ## Comment ça marche
@@ -92,12 +81,17 @@ HTTP, comparaison sur le jeu de test). Nécessite `uv sync` (dépendance de dev
   "Jean-Daniel" OU "Jacob-Daniel") : les deux sont gardés, et c'est le reste de
   l'adresse (nom de rue, numéro) qui départage via le score.
 - **Score (0-100)** : calculé côté client (`score.py`), pas seulement le
-  `_rankingScore` interne de Meilisearch (trop grossier). Deux signaux :
+  `_rankingScore` interne de Meilisearch (trop grossier). Trois signaux :
   similarité textuelle (`rapidfuzz.token_set_ratio`, sur adresse et
   adresse+localité, en essayant toutes les interprétations d'une abréviation
-  ambiguë, en gardant le maximum) + bonus/malus sur la concordance exacte du
-  numéro de rue (une plage en fin de requête comme "51-53" accepte l'une ou
-  l'autre borne, les deux existant souvent comme adresses distinctes).
+  ambiguë, en gardant le maximum) + similarité phonétique en complément
+  (FONEM, bibliothèque `abydos` — encode chaque mot, jamais la phrase entière
+  collée, pour préserver les frontières de tokens que `token_set_ratio`
+  exploite ; ne peut que faire remonter le score, jamais le baisser, donc
+  strictement additif à la similarité textuelle) + bonus/malus sur la
+  concordance exacte du numéro de rue (une plage en fin de requête comme
+  "51-53" accepte l'une ou l'autre borne, les deux existant souvent comme
+  adresses distinctes).
 - **`ingest.py` vérifie que le nombre de documents indexés correspond au nombre
   d'enregistrements source** et fait échouer l'ingestion sinon. Une ingestion
   précédente avait silencieusement perdu ~18% des adresses (deux lots de 5000
@@ -142,8 +136,9 @@ score ≥ 95, contre 61/107 pour l'API SITG Lab en v2 au même seuil (voir
 `compare.py`). Vérifié aussi sur un jeu plus large et volontairement
 "bruité" (`tests/test_adresses_20260707_152332.csv`, ~130k adresses avec
 abréviations, fautes de frappe, casse aléatoire, codes d'entrée cadastraux,
-etc.) : 97.64% avec un score ≥ 95 (contre 94.87% avant les correctifs
-ci-dessus).
+etc.) : 97.66% avec un score ≥ 95 (contre 94.87% avant les correctifs
+ci-dessus, 97.64% avant l'ajout du signal phonétique FONEM — gain marginal,
++17 adresses sur ~130k, mais conservé : ne régresse rien et coûte peu).
 
 ## Sécurité
 
@@ -166,10 +161,15 @@ ci-dessus).
 
 - Les adresses avec plusieurs fautes de frappe cumulées sur un mot rare et peu
   discriminant (ex. "Jaous" pour "James") peuvent ne retourner aucun résultat
-  ("Bvd Jaous Fazy 23") — testé aussi avec un algorithme phonétique dédié au
-  français (FONEM, bibliothèque `abydos`), qui n'apporte qu'un gain marginal
-  sur nos cas réels (ex. Bessonnette/Bassonette : 85.7 -> 88.9 seulement) et
-  n'a donc pas été intégré.
+  ("Bvd Jaous Fazy 23") : Meilisearch ne propose même pas la bonne rue comme
+  candidat (trop loin en distance d'édition pour sa tolérance aux typos), donc
+  aucun signal de reclassement côté client ne peut aider — "Jaous"/"James"
+  n'est d'ailleurs pas une confusion phonétique en français (FONEM encode les
+  deux différemment), seulement un ordre de lettres mélangé.
+  Le signal phonétique FONEM (voir "Comment ça marche") aide sur de vraies
+  quasi-homophonies déjà retrouvées par Meilisearch (ex. Bessonnette/
+  Bassonette), mais ne peut pas faire remonter un candidat qui n'a jamais été
+  proposé en premier lieu.
 - Scope volontairement limité au canton de Genève (pas de RegBL/BAN).
 
 ## Fichiers

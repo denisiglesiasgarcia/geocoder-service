@@ -19,7 +19,10 @@ def main() -> None:
 
     if not ZIP_PATH.exists():
         print(f"Téléchargement de {DATA_URL} ...")
-        urlretrieve(DATA_URL, ZIP_PATH)
+        # DATA_URL est une constante HTTPS fixe du module, jamais une entrée
+        # utilisateur : le risque visé par B310 (schéma d'URL arbitraire, ex.
+        # file://) ne s'applique pas ici.
+        urlretrieve(DATA_URL, ZIP_PATH)  # nosec B310
 
     print(f"Extraction de {ZIP_PATH.name} ...")
     with zipfile.ZipFile(ZIP_PATH) as zf:

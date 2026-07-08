@@ -51,15 +51,22 @@ def _load_records() -> list[dict]:
     fields = [f[0] for f in sf.fields[1:]]
     records = []
     for shape_rec in sf.iterShapeRecords():
+        assert shape_rec.record is not None
+        assert shape_rec.shape is not None
         rec = dict(zip(fields, shape_rec.record, strict=True))
-        x, y = shape_rec.shape.points[0]
+        # Slicé plutôt que déballé directement : `points[0]` peut avoir 3-4
+        # éléments pour des géométries Z/M, pas seulement (x, y).
+        x, y = shape_rec.shape.points[0][:2]
         lon, lat = _LV95_TO_WGS84.transform(x, y)
         records.append(
             {
                 # Certains IDPADR source ont des espaces parasites (ex. " 18080715011"),
                 # que Meilisearch rejette comme identifiant de document invalide.
-                "id": (rec["IDPADR"] or "").strip(),
-                "adresse": (rec["ADRESSE"] or "").strip(),
+                # IDPADR/ADRESSE sont des champs DBF caractère (toujours des
+                # chaînes ici) ; str() les distingue du type large que peut
+                # renvoyer un champ DBF en général (voir plus haut).
+                "id": str(rec["IDPADR"] or "").strip(),
+                "adresse": str(rec["ADRESSE"] or "").strip(),
                 "typeVoie": rec["TYVOIE"],
                 "houseNumber": rec["NO_ADRESSE"],
                 "postalCode": rec["NO_POSTAL"],
@@ -90,11 +97,20 @@ def _build_typevoie_abbr_to_full() -> dict[str, list[str]]:
     typabr_idx = fields.index("TYPABR")
     tyvoie_idx = fields.index("TYVOIE")
 
-    abbr_to_full: dict[str, list[str]] = {k: list(v) for k, v in _EXTRA_ABBR_TO_FULL.items()}
+    abbr_to_full: dict[str, list[str]] = {
+        k: list(v) for k, v in _EXTRA_ABBR_TO_FULL.items()
+    }
     for rec in sf.iterRecords():
+        if rec is None:
+            continue
         abbr, full = rec[typabr_idx], rec[tyvoie_idx]
         if not abbr or not full:
             continue
+        # TYPABR/TYVOIE sont des champs DBF de type caractère (voir sf.fields) :
+        # toujours des chaînes en pratique, mais le type de _Record.__getitem__
+        # est une union (int/float/str/date) puisqu'un champ DBF peut être
+        # n'importe lequel de ces types selon la colonne.
+        abbr, full = str(abbr), str(full)
         key = _normalize_key(abbr)
         if key and key != _normalize_key(full):
             candidates = abbr_to_full.setdefault(key, [])
@@ -128,7 +144,9 @@ def _build_forename_abbr_to_full() -> dict[str, list[str]]:
     abbr_to_full: dict[str, list[str]] = {}
     seen: set[str] = set()
     for rec in sf.iterRecords():
-        liant = (rec[liant_idx] or "").strip(" .-")
+        if rec is None:
+            continue
+        liant = str(rec[liant_idx] or "").strip(" .-")
         if not liant or "-" not in liant or liant in seen:
             continue
         seen.add(liant)
@@ -185,10 +203,14 @@ def _build_stop_words(typevoie_abbr_to_full: dict[str, list[str]]) -> list[str]:
     neutraliser globalement casse plus de cas réels que ça n'en corrige
     (vérifié : régression sur "Ch. De l'Avanchet", "Ch. Des Chênes", etc.).
     """
-    return sorted({c.lower() for candidates in typevoie_abbr_to_full.values() for c in candidates})
+    return sorted(
+        {c.lower() for candidates in typevoie_abbr_to_full.values() for c in candidates}
+    )
 
 
-def _build_meilisearch_synonyms(abbr_to_full: dict[str, list[str]]) -> dict[str, list[str]]:
+def _build_meilisearch_synonyms(
+    abbr_to_full: dict[str, list[str]],
+) -> dict[str, list[str]]:
     """Synonymes bidirectionnels pour Meilisearch (abréviation <-> formes complètes)."""
     synonyms: dict[str, list[str]] = {}
     for abbr, candidates in abbr_to_full.items():
@@ -222,9 +244,13 @@ def _write_search_api_key(client: meilisearch.Client) -> None:
     Exécuté à chaque démarrage (même si l'ingestion elle-même est ignorée),
     pour que le fichier existe toujours après un redémarrage de conteneur.
     """
-    search_key = next((k.key for k in client.get_keys().results if k.actions == ["search"]), None)
+    search_key = next(
+        (k.key for k in client.get_keys().results if k.actions == ["search"]), None
+    )
     if search_key is None:
-        print("Avertissement : aucune clé Meilisearch 'search' trouvée, MEILI_MASTER_KEY sera utilisée à la place.")
+        print(
+            "Avertissement : aucune clé Meilisearch 'search' trouvée, MEILI_MASTER_KEY sera utilisée à la place."
+        )
         return
     SEARCH_API_KEY_PATH.write_text(search_key, encoding="utf-8")
 
@@ -249,8 +275,10 @@ def main() -> None:
     ABBR_TO_FULL_PATH.write_text(
         json.dumps(abbr_to_full, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"Table abréviation -> forme complète écrite dans {ABBR_TO_FULL_PATH.name} "
-          f"({len(abbr_to_full)} entrées)")
+    print(
+        f"Table abréviation -> forme complète écrite dans {ABBR_TO_FULL_PATH.name} "
+        f"({len(abbr_to_full)} entrées)"
+    )
 
     # Repartir d'un index propre (ex. après --force sur un index existant) :
     # create_index échoue si l'index existe déjà, et delete_index est async
@@ -258,7 +286,14 @@ def main() -> None:
     try:
         delete_task = client.delete_index(INDEX_NAME)
         client.wait_for_task(delete_task.task_uid, timeout_in_ms=30_000)
-    except Exception:
+    except Exception:  # nosec B110
+        # Intentionnellement large : Meilisearch ne renvoie pas d'erreur
+        # synchrone pour un index déjà absent (delete_index() met en tâche,
+        # dont le statut "failed" n'est pas non plus une exception ici), donc
+        # cette branche couvre surtout des erreurs de communication. Si la
+        # suppression a réellement échoué pour une autre raison, create_index
+        # ci-dessous échouera à son tour et fera remonter l'erreur (via son
+        # propre check de statut), donc rien n'est silencieusement perdu.
         pass
     create_task = client.create_index(INDEX_NAME, {"primaryKey": "id"})
     finished_create = client.wait_for_task(create_task.task_uid, timeout_in_ms=30_000)

@@ -21,7 +21,9 @@ from geocoder_service.score import compute_score
 
 MEILI_URL = os.environ.get("MEILI_URL", "http://localhost:7700")
 MEILI_MASTER_KEY = os.environ.get("MEILI_MASTER_KEY", "dev_master_key_change_me")
-SEARCH_API_KEY_PATH = Path(__file__).parent.parent.parent / "data" / "search_api_key.txt"
+SEARCH_API_KEY_PATH = (
+    Path(__file__).parent.parent.parent / "data" / "search_api_key.txt"
+)
 INDEX_NAME = "adresses_ge"
 
 _client: meilisearch.Client | None = None
@@ -74,7 +76,9 @@ def _rank(query: str, hits: list[dict], limit: int, offset: int = 0) -> list[dic
     return scored[offset : offset + limit]
 
 
-def geocode(query: str, *, limit: int = 5, offset: int = 0, candidate_pool: int = 20) -> list[dict]:
+def geocode(
+    query: str, *, limit: int = 5, offset: int = 0, candidate_pool: int = 20
+) -> list[dict]:
     """Géocode une adresse et retourne jusqu'à `limit` résultats (à partir de `offset`),
     triés par score décroissant.
 
@@ -113,5 +117,7 @@ async def geocode_async(
 ) -> list[dict]:
     """Équivalent asynchrone de `geocode()`, pour l'API HTTP (voir api.py) :
     ne bloque pas la boucle d'événements pendant l'appel réseau à Meilisearch."""
-    result = await geocode_async_raw(query, limit=limit, offset=offset, candidate_pool=candidate_pool)
+    result = await geocode_async_raw(
+        query, limit=limit, offset=offset, candidate_pool=candidate_pool
+    )
     return result["hits"]

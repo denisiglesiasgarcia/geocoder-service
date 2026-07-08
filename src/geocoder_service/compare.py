@@ -34,7 +34,9 @@ def main() -> None:
     print(f"{n_any}/{len(addresses)} avec au moins un résultat")
     if below:
         print("\nSous le seuil (ou sans résultat) :")
-        for score, adr, matched in sorted(below, key=lambda x: (x[0] is None, x[0] or 0)):
+        for score, adr, matched in sorted(
+            below, key=lambda x: (x[0] is None, x[0] or 0)
+        ):
             score_str = f"{score:.2f}" if score is not None else "NONE"
             print(f"  {score_str:>6}  {adr:45s} -> {matched}")
 
